@@ -1,2 +1,1 @@
-# Carbon-Dioxide-Analysis
-Time series analysis and modeling of the Monthly Carbon Dioxide Levels at Mauna Loa dataset
+Final project as part of PSTATW 174 at UCSB.
