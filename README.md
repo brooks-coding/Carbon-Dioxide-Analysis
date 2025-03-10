@@ -1,1 +1,3 @@
-Final project as part of PSTATW 174 at UCSB.
+# Carbon Dioxide Time Series Analysis
+
+This project was done as part of the Time Series class within my BS program at UCSB. It follows the process of analyzing the Monthly Carbon Dioxide Levels at Mauna Loa dataset, formulating several time series models, and forecasting future carbon dioxide emissions.
