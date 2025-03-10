@@ -1,0 +1,699 @@
+---
+title: "Forecasting Carbon Dioxide Emissions"
+author: "Brooks Piper"
+date: "2025-03-03"
+output: pdf_document
+toc: TRUE
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, messages = FALSE, warnings = FALSE)
+```
+
+\newpage
+# Abstract
+
+This project models Monthly Carbon Dioxide Levels at Mauna Loa for forecasting. Using seasonal and non-seasonal differencing, we fit a SARIMA model to data from 1958–2020. Our forecasts predict a 1.1% rise in CO$_2$ levels by 2023 and a 5.2% increase by 2030, highlighting the accelerating growth of atmospheric carbon dioxide and the urgency of addressing it.
+
+# Introduction
+
+```{r}
+library(astsa)
+data(cardox)
+plot(cardox,
+     main = "Monthly Carbon Dioxide Measurements from 1958 - 2023",
+     xlab = "Time (months)",
+     ylab = "Carbon Dioxide (ppm)",
+     lwd = 2)
+```
+
+
+Greenhouse gases drive climate change, with carbon dioxide ($CO_2$) accounting for over 80% of U.S. emissions. As the primary contributor to rising temperatures, sea levels, and ecosystem disruptions—largely from fossil fuel combustion—its continued increase is inevitable (as seen in the chart above). However, understanding how CO$_2$ levels will grow is crucial. While human behavior is unpredictable, time series modeling allows us to analyze the trend-like and seasonal patterns of emissions.
+
+In this project, we utilize the R coding language to examine the Monthly Carbon Dioxide Levels at Mauna Loa from 1958–2023. Using differencing to remove trend and seasonality, we fit multiple SARIMA models, conduct diagnostic checks, and forecast future CO$_2$ levels to better understand its trajectory.
+
+\newpage
+# Data Analysis
+
+## Training and Testing Set Split
+
+```{r}
+forecast_length <- 36
+cutoff <- c(1:(length(cardox) - forecast_length))
+train <- cardox[cutoff]
+test <- cardox[-cutoff]
+```
+
+
+As was previously mentioned, this data set spans from 1958 to 2023. We will create a cutoff at the beginning of 2020, reserving `r length(train)` months for training and `r length(test)` for testing. This split has been visualized below.
+
+```{r}
+t <- 1:length(cardox)
+t_1 <- 1:length(train)
+t_2 <- (length(train)+1):length(cardox)
+
+plot(t, cardox,
+     main = "Training-Test Split",
+     xlab = "Index",
+     ylab = "Carbon Dioxide (ppm)",
+     lwd = 2,
+     type = "l")
+lines(t_2, test, 
+      lwd = 2,
+      type = "l",
+      col = "blue")
+legend("topleft", legend = c("Training Data", "Test Data"),
+       col = c("black", "blue"), lty = 1, lwd = 2)
+```
+
+## Achieving White Noise
+
+The training data is visualized below.
+
+```{r}
+plot(t_1, train,
+     main = "Monthly Carbon Dioxide Measurements from 1958 - 2020",
+     xlab = "Index",
+     ylab = "Carbon Dioxide (ppm)",
+     lwd = 2,
+     type = "l")
+```
+
+We can identify several components of the time series that make it non-stationary. One, a linear trend is present. And two, there is seasonality. Fortunately, the variance appears stable throughout, indicating that there is no need for a stabilizing transformation. Thus, we will proceed to the differencing stage.
+
+```{r}
+op = par(mfrow = c(1,2))
+train_d1 <- diff(train, 1)
+plot(train_d1, 
+     main = "De-trended",
+     ylab = "Carbon Dioxide (ppm)",
+     type = "l")
+d1_var <- var(train_d1)
+train_d1_12 <- diff(train_d1, 12)
+plot(train_d1_12, 
+     main = "De-trended/seasonalized",
+     ylab = "Carbon Dioxide (ppm)",
+     type = "l")
+d1_12_var <- var(train_d1_12)
+```
+
+After the first difference, the trend was completely eliminated. However, seasonality was still present which necessitated an additional difference. We know that our data is measured monthly, with the seasonality occurring in yearly cycles, thus indicating a difference at lag 12. After both of these operations, the trend and seasonality are no longer present in the time series, and it is visually akin to white noise. We can confirm these claims by intermittently calculating the variance at each step of the process.
+
+```{r}
+library(knitr)
+
+train_var <- var(train)
+
+table <- matrix(
+  c(train_var, d1_var, d1_12_var),
+  nrow = 3,
+  ncol = 1
+)
+
+rownames(table) <- c("Training", "De-trended", "De-trended/seasonalized")
+kable(table, caption = "Variance at several differencing steps")
+```
+
+The above table supports our previous intuition that the difference steps successfully reduced the variance, introducing a white noise process. Therefore, we will proceed to ACF and PACF analysis with our de-trended/seasonalized data.
+
+## ACF and PACF Analysis
+
+In order to determine the presence and order of model components, we will analyze the patterns and structures of the ACF and PACF plots.
+
+```{r}
+op = par(mfrow = c(1,2))
+acf(train_d1_12, lag.max = 40, main="")
+title("ACF Plot")
+pacf(train_d1_12, lag.max = 40, main="")
+title("PACF Plot")
+```
+
+The ACF and PACF plots indicate a complex process with the presence of both non-seasonal and seasonal components, likely suggesting the necessity of modeling with SARIMA. Beginning with the ACF plot, we see three significant lags of interest: 1, 11, and 12. As for the first two, these suggest a non-seasonal moving average process of order $q=1$ and $q=11$. As for the third, we have a significant lag at $h=1s=12$ which suggests a seasonal moving average process of order $Q=1$. 
+
+Moving on to the PACF plot, we again see several significant lags, namely 1 and 11. Both suggest a non-seasonal autoregressive process of order $p=1$ or $p=11$. One could argue that there is also a seasonal autoregressive process, however, the seasonal lags $h=1s=2s=\cdots$ are exponentially decaying towards insignificance. Thus, we will select $P=0$.
+
+Finally, we previously performed a single non-seasonal difference at lag 1 and a single seasonal difference at lag 12 to achieve white noise, which indicates that we have $d=1$, $D=1$, and $s=12$. Thus, we are left with four final models, summarized below.
+
+1. SARIMA$(1,1,1)\times(0,1,1)_{12}$
+2. SARIMA$(11,1,1)\times(0,1,1)_{12}$
+3. SARIMA$(1,1,11)\times(0,1,1)_{12}$
+4. SARIMA$(11,1,11)\times(0,1,1)_{12}$
+
+# Model Fitting
+
+## MLE Estimation
+
+### SARIMA$(1,1,1)\times(0,1,1)_{12}$
+
+```{r, cache = TRUE}
+mod1 <- arima(train, order=c(1,1,1),
+               seasonal = list(order = c(0,1,1),
+                               period = 12),
+              method = "ML")
+mod1
+```
+
+All coefficients are significant, indicating that we are left with a SARIMA$(1,1,1)\times(0,1,1)_{12}$ model.
+
+### SARIMA$(11,1,1)\times(0,1,1)_{12}$
+
+```{r, cache = TRUE}
+mod2 <- arima(train, order=c(11,1,1),
+               seasonal = list(order = c(0,1,1),
+                               period = 12),
+              method = "ML")
+mod2
+```
+All coefficients aside from the seasonal moving average component are insignificant and will be removed.
+
+```{r, cache = TRUE}
+mod2 <- arima(train, order=c(11,1,1),
+               seasonal = list(order = c(0,1,1),
+                               period = 12),
+              method = "ML",
+              fixed = c(0,0,0,0,0,0,0,0,0,0,0,0,NA))
+mod2
+```
+
+All coefficients are significant, indicating that we are left with a SARIMA$(0,1,0)\times(0,1,1)_{12}$ model.
+
+### SARIMA$(1,1,11)\times(0,1,1)_{12}$
+
+```{r, cache = TRUE}
+mod3 <- arima(train, order=c(1,1,11),
+               seasonal = list(order = c(0,1,1),
+                               period = 12),
+              method = "ML")
+mod3
+```
+Similar to before, all coefficients aside from the seasonal moving average component are insignificant and will be removed.
+
+```{r, cache = TRUE}
+mod3 <- arima(train, order=c(1,1,11),
+               seasonal = list(order = c(0,1,1),
+                               period = 12),
+              method = "ML",
+              fixed = c(0,0,0,0,0,0,0,0,0,0,0,0,NA))
+mod3
+```
+
+All coefficients are significant and we are left with the same SARIMA$(0,1,0)\times(0,1,1)_{12}$ model as previous.
+
+### SARIMA$(11,1,11)\times(0,1,1)_{12}$
+
+```{r, cache = TRUE}
+mod4 <- arima(train, order=c(11,1,11),
+               seasonal = list(order = c(0,1,1),
+                               period = 12),
+              method = "ML")
+mod4
+```
+
+Once again, as before, all coefficients aside from the seasonal moving average component are insignificant and will be removed.
+
+```{r, cache = TRUE}
+mod4 <- arima(train, order=c(11,1,11),
+               seasonal = list(order = c(0,1,1),
+                               period = 12),
+              method = "ML",
+              fixed = c(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,NA))
+mod4
+```
+
+Once coefficients are significant and we are left with the same SARIMA$(0,1,0)\times(0,1,1)_{12}$ model as with the previous two iterations. This concludes the model fitting.
+
+## Model Comparison
+
+After the fitting stage, the models either converged to SARIMA$(1,1,1)\times(0,1,1)_{12}$ or SARIMA$(0,1,0)\times(0,1,1)_{12}$. For loss of generality, we will assign the latter to be model 2 despite models 3 and 4 identically converging. Only having models 1 and 2 to decide between, we can compare their calculated AIC values, summarized below.
+
+```{r}
+table <- matrix(
+  c(mod1$aic, mod2$aic),
+  nrow = 2,
+  ncol = 1
+)
+
+rownames(table) <- c("Model 1", "Model 2")
+kable(table, caption = "AIC Values for Models 1 and 2")
+```
+
+
+The above table indicates that model 1 far outperforms model 2. One may consider the principle of parsimony, which suggests that picking a simpler model is always optimal, yet the stark difference in model fit supersedes that concept. Thus, we will select model 1 which can be algebraically represented as follows.
+
+$$
+(1-0.1936B)(1-B)(1-B^{12})X_t=(1-0.5517B)(1-0.8615B^{12})Z_t
+$$
+
+## Diagnostic Checking
+
+### Stationarity and Invertibility
+
+For the first aspect of our diagnostic checking, we will ensure that the model is both stationary and invertible. Beginning with stationarity, we will need to check that the roots of the characteristic polynomials $\phi(z)$ and $\Phi(z)$ lie outside the unit circle. However, because our selected model only has one non-seasonal autoregressive term, we can simplify this process to check if $\phi(z)$ satisfies $|\phi_1|<1$. We have that $|\phi_1|=0.1936<1$, which indicates that the model is stationary.
+
+Assessing invertibility follows a similar process, but this time we will need to check that the roots of the characteristic polynomials $\theta(z)$ and $\Theta(z)$ lie outside the unit circle. Once again, our selected model only has one seasonal and one non-seasonal moving average term, so we can simplify this process to check if $\theta(z)$ and $\Theta(z)$ satisfy $|\theta_1|<1$ and $|\Theta_1|<1$. We have that $|\theta_1|=0.5517<1$ and $|\Theta_1|=0.8615<1$, which indicates that the model is also invertible.
+
+### Residuals Analysis
+
+For the final aspect of our diagnostic checking, we will confirm that the residuals of the model are white noise and normally distributed through visuals and several statistical tests. Beginning with the former, we produce the following plots.
+
+```{r}
+res = residuals(mod1)
+par(mfrow=c(2,2))
+hist(res,density=20,breaks=20,
+     col="blue",
+     xlab="",
+     prob=TRUE,
+     main="Histogram of residuals of model")
+m <- mean(res)
+std <- sqrt(var(res))
+curve( dnorm(x,m,std), add=TRUE )
+plot.ts(res,ylab= "residuals of model",main="Residuals plot of model")
+fitt <- lm(res~ as.numeric(1:length(res)))
+abline(fitt, col="red")
+abline(h=mean(res), col="blue")
+qqnorm(res,main= "Normal Q-Q Plot for Model")
+qqline(res,col="blue")
+```
+
+Beginning with the histogram, the residuals appear to be normally distributed, with a symmetric bell-shaped density curve. Moving on to the time series format, the residuals are visually akin to white noise, lacking any trend or seasonality. Finally, the Q-Q plot has the majority of the quantiles on the Q-Q Line. Collectively, these analyses suggest that the residuals are white noise and normally distributed. Thus we will move on to performing a Shapiro-Wilk test and several Portmanteau tests.
+
+```{r}
+shapiro <- shapiro.test(res)
+
+table <- matrix(
+  c(shapiro$statistic, shapiro$p.value),
+  nrow = 1,
+  ncol = 2,
+  byrow = TRUE
+)
+
+colnames(table) = c("W", "p-value")
+kable(table, caption = "Shapiro-Wilk Test")
+
+library(kableExtra)
+h <- round(sqrt(length(train)))
+box_pierce <- Box.test(res, lag = h, type = c("Box-Pierce"), fitdf = 3)
+ljung_box <- Box.test(res, lag = h, type = c("Ljung-Box"), fitdf = 3)
+mcleod_li <- Box.test(res^2, lag = h, type = c("Ljung-Box"), fitdf = 0)
+
+table <- matrix(
+  c(box_pierce$statistic, box_pierce$parameter, box_pierce$p.value,
+    ljung_box$statistic, ljung_box$parameter, ljung_box$p.value,
+    mcleod_li$statistic, mcleod_li$parameter, mcleod_li$p.value),
+  nrow = 3,
+  ncol = 3,
+  byrow = TRUE
+)
+
+rownames(table) <- c("Box-Pierce", "Ljung-Box", "Mcleod-Li")
+colnames(table) = c("$\\chi^2$", "df", "p-value")
+kable(table, caption = "Portmanteau Tests",
+      escape = FALSE)
+```
+
+At the $\alpha=0.05$ significance level, we fail to reject all null hypotheses, suggesting that there is not statistically significant evidence that the residuals are not normally distributed nor not independent. Thus, we will proceed to fitting an AR$(p)$ model to the residuals.
+
+```{r}
+ar(res, aic = TRUE, order.max = NULL, method = c("yule-walker"))
+```
+
+The fitted model is AR$(0)$, indicating once again that residuals are white noise. Finally, we will create the ACF and PACF plots of the residuals.
+
+```{r}
+par(mfrow=c(1,2))
+acf(res, lag.max=40,main="")
+title("ACF of the residuals")
+pacf(res, lag.max=40,main="")
+title("PACF of the residuals")
+```
+
+The ACF and PACF plots have no significant autocorrelations or partial-autocorrelations, aside from those at lag 37. However, due to the conservative nature of Bartlett's formula which calculates the error bounds and the relative proximity of said significant autocorrelations or partial-autocorrelations, these can be considered insignificant. Thus, we conclude that residuals are white noise and normally distributed. With our diagnostic checking complete, we will proceed to forecasting.
+
+# Forecasting
+
+To begin our forecasting, we will predict the carbon dioxide (ppm) from 2020 to 2023, utilizing the test set for validation.
+
+```{r, warning=FALSE, message=FALSE}
+library(forecast)
+forecast_length <- 36
+pred.tr <- predict(mod1, n.ahead = forecast_length)
+U.tr = pred.tr$pred + 2*pred.tr$se
+L.tr = pred.tr$pred- 2*pred.tr$se
+
+ts.plot(as.numeric(cardox),
+        xlim = c(length(train)-10,length(train)+forecast_length),
+        ylim = c(400,max(cardox) + 20),
+        lwd = 2, col="black", 
+        main = "Forecasted Carbon Dioxide for 2020-2023",
+        xlab = "Time (months)",
+        ylab="Carbon Dioxide (ppm)")
+lines((length(train)+1):length(cardox), test, lwd = 2, col="blue")
+lines(U.tr, lwd = 2, col="orange", lty="dashed")
+lines(L.tr, lwd = 2, col="orange", lty="dashed")
+points((length(cardox)-forecast_length+1):length(cardox), pred.tr$pred, col="red")
+legend("topleft",
+       legend = c("Training Data",
+                  "Test Data",
+                  "Forecast",
+                  "95% Confidence Interval"),
+       col = c("black", "blue", "red", "orange"),
+       lty = c(1, 1, 3, 2), lwd = 2)
+```
+
+We can see that the model performed exceptionally well on the test set, with all of the forecasts within the 95% confidence interval, and almost all directly on the test line with the remainder closely adjacent. Now, what do these forecasts actually mean for the projected increase in CO$_2$ emission? The recorded amount of carbon dioxide at the beginning of 2020 was `r test[1]` ppm and increased to `r test[length(test)]` ppm by the end of 2023. That accounts for a `r test[length(test)] - test[1]` ppm increase or a `r round((test[length(test)] - test[1]) / test[1] * 100, 4)`\% change over the course of those three years. Does that sound like a lot? Now, we will forecast the CO$_2$ for the next ten years to get a sense of the long term changes to these figures.
+
+```{r}
+library(forecast)
+forecast_length <- 120
+pred.tr <- predict(mod1, n.ahead = forecast_length)
+U.tr = pred.tr$pred + 2*pred.tr$se
+L.tr = pred.tr$pred- 2*pred.tr$se
+
+ts.plot(as.numeric(train),
+        xlim = c(length(train),length(train)+forecast_length),
+        ylim = c(400,max(cardox) + 30),
+        lwd = 2, col="black", 
+        main = "Forecasted Carbon Dioxide for 2020-2030",
+        xlab = "Time (months)",
+        ylab="Carbon Dioxide (ppm)")
+lines(U.tr, lwd = 2, col="orange", lty="dashed")
+lines(L.tr, lwd = 2, col="orange", lty="dashed")
+points((length(train)+1):(length(train)+forecast_length), pred.tr$pred, col="red")
+legend("topleft",
+       legend = c("Training Data",
+                  "Forecast",
+                  "95% Confidence Interval"),
+       col = c("black", "red", "orange"),
+       lty = c(1, 3, 2), lwd = 2)
+```
+
+The measured amount of carbon dioxide is projected to continue its increase, reaching `r pred.tr$pred[length(pred.tr$pred)]` ppm by the end of 2030. In comparison to the value at the start of 2020, this jump corresponds to a `r round((pred.tr$pred[length(pred.tr$pred)] - test[1]) / test[1] * 100, 4)`\% increase. 
+
+# Conclusion
+
+This project aimed to develop a suitable model for forecasting atmospheric carbon dioxide levels. After applying differencing to remove trend and seasonality, ACF and PACF analysis, along with MLE-based model fitting, led us to select a SARIMA$(1,1,1) \times (0,1,1)_{12}$ model: $$(1-0.1936B)(1-B)(1-B^{12})X_t=(1-0.5517B)(1-0.8615B^{12})Z_t$$ 
+The model successfully captured the underlying patterns in the data, yielding highly accurate forecasts. More critically, it highlighted the accelerating rise in emissions, emphasizing the urgency of addressing climate change. These tools not only quantify the problem but serve as a wake-up call---the time for action is now.
+
+# References
+
+National Oceanic and Atmospheric Administration. (n.d.). Carbon dioxide trends at Mauna Loa Observatory. Retrieved from https://gml.noaa.gov/ccgg/trends/
+
+Stoffer, D. S. (2025). astsa: Applied Statistical Time Series Analysis (Version 2.2) [R package].
+
+\newpage
+# Appendix
+
+```{r, eval=FALSE, echo=TRUE, message=FALSE, warning=FALSE}
+# Downloading the Mauna Loa Cardox Dataset from the astsa package
+library(astsa)
+data(cardox)
+
+# Plotting the time series
+plot(cardox,
+     main = "Monthly Carbon Dioxide Measurements from 1958 - 2023",
+     xlab = "Time (months)",
+     ylab = "Carbon Dioxide (ppm)",
+     lwd = 2)
+```
+
+```{r, eval=FALSE, echo=TRUE, message=FALSE, warning=FALSE}
+# Training-test split
+forecast_length <- 36
+cutoff <- c(1:(length(cardox) - forecast_length))
+train <- cardox[cutoff]
+test <- cardox[-cutoff]
+```
+
+```{r, eval=FALSE, echo=TRUE, message=FALSE, warning=FALSE}
+# Plotting the training-test split
+t <- 1:length(cardox)
+t_1 <- 1:length(train)
+t_2 <- (length(train)+1):length(cardox)
+
+plot(t, cardox,
+     main = "Training-Test Split",
+     xlab = "Index",
+     ylab = "Carbon Dioxide (ppm)",
+     lwd = 2,
+     type = "l")
+lines(t_2, test, 
+      lwd = 2,
+      type = "l",
+      col = "blue")
+legend("topleft", legend = c("Training Data", "Test Data"),
+       col = c("black", "blue"), lty = 1, lwd = 2)
+```
+
+```{r, eval=FALSE, echo=TRUE, message=FALSE, warning=FALSE}
+# Plotting the training data
+plot(t_1, train,
+     main = "Monthly Carbon Dioxide Measurements from 1958 - 2020",
+     xlab = "Index",
+     ylab = "Carbon Dioxide (ppm)",
+     lwd = 2,
+     type = "l")
+```
+
+```{r, eval=FALSE, echo=TRUE, message=FALSE, warning=FALSE}
+# Plotting the differenced data
+op = par(mfrow = c(1,2))
+train_d1 <- diff(train, 1)
+plot(train_d1, 
+     main = "De-trended",
+     ylab = "Carbon Dioxide (ppm)",
+     type = "l")
+d1_var <- var(train_d1)
+train_d1_12 <- diff(train_d1, 12)
+plot(train_d1_12, 
+     main = "De-trended/seasonalized",
+     ylab = "Carbon Dioxide (ppm)",
+     type = "l")
+d1_12_var <- var(train_d1_12)
+```
+
+```{r, eval=FALSE, echo=TRUE, message=FALSE, warning=FALSE}
+# Aggregating the variance at each step of differencing
+library(knitr)
+
+train_var <- var(train)
+
+table <- matrix(
+  c(train_var, d1_var, d1_12_var),
+  nrow = 3,
+  ncol = 1
+)
+
+rownames(table) <- c("Training", "De-trended", "De-trended/seasonalized")
+kable(table, caption = "Variance at several differencing steps")
+```
+
+```{r, eval=FALSE, echo=TRUE, message=FALSE, warning=FALSE}
+# Plotting the ACF and PACF for the stationary data
+op = par(mfrow = c(1,2))
+acf(train_d1_12, lag.max = 40, main="")
+title("ACF Plot")
+pacf(train_d1_12, lag.max = 40, main="")
+title("PACF Plot")
+```
+
+```{r, eval=FALSE, echo=TRUE, message=FALSE, warning=FALSE}
+# Fitting model 1
+mod1 <- arima(train, order=c(1,1,1),
+               seasonal = list(order = c(0,1,1),
+                               period = 12),
+              method = "ML")
+mod1
+```
+
+```{r, eval=FALSE, echo=TRUE, message=FALSE, warning=FALSE}
+# Fitting model 2
+mod2 <- arima(train, order=c(11,1,1),
+               seasonal = list(order = c(0,1,1),
+                               period = 12),
+              method = "ML")
+mod2
+```
+
+```{r, eval=FALSE, echo=TRUE, message=FALSE, warning=FALSE}
+# Adjusting model 2 to remove insignificant coefficients
+mod2 <- arima(train, order=c(11,1,1),
+               seasonal = list(order = c(0,1,1),
+                               period = 12),
+              method = "ML",
+              fixed = c(0,0,0,0,0,0,0,0,0,0,0,0,NA))
+mod2
+```
+
+```{r, eval=FALSE, echo=TRUE, message=FALSE, warning=FALSE}
+# Fitting model 3
+mod3 <- arima(train, order=c(1,1,11),
+               seasonal = list(order = c(0,1,1),
+                               period = 12),
+              method = "ML")
+mod3
+```
+
+```{r, eval=FALSE, echo=TRUE, message=FALSE, warning=FALSE}
+# Adjusting model 3 to remove insignificant coefficients
+mod3 <- arima(train, order=c(1,1,11),
+               seasonal = list(order = c(0,1,1),
+                               period = 12),
+              method = "ML",
+              fixed = c(0,0,0,0,0,0,0,0,0,0,0,0,NA))
+mod3
+```
+
+```{r, eval=FALSE, echo=TRUE, message=FALSE, warning=FALSE}
+# Fitting model 4
+mod4 <- arima(train, order=c(11,1,11),
+               seasonal = list(order = c(0,1,1),
+                               period = 12),
+              method = "ML")
+mod4
+```
+
+```{r, eval=FALSE, echo=TRUE, message=FALSE, warning=FALSE}
+# Adjusting model 4 to remove insignificant coefficients
+mod4 <- arima(train, order=c(11,1,11),
+               seasonal = list(order = c(0,1,1),
+                               period = 12),
+              method = "ML",
+              fixed = c(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,NA))
+mod4
+```
+
+```{r, eval=FALSE, echo=TRUE, message=FALSE, warning=FALSE}
+# Aggregating AIC values for the models
+table <- matrix(
+  c(mod1$aic, mod2$aic),
+  nrow = 2,
+  ncol = 1
+)
+
+rownames(table) <- c("Model 1", "Model 2")
+kable(table, caption = "AIC Values for Models 1 and 2")
+```
+
+```{r, eval=FALSE, echo=TRUE, message=FALSE, warning=FALSE}
+# Analyzing residuals distribution
+res = residuals(mod1)
+par(mfrow=c(2,2))
+hist(res,density=20,breaks=20,
+     col="blue",
+     xlab="",
+     prob=TRUE,
+     main="Histogram of residuals of model")
+m <- mean(res)
+std <- sqrt(var(res))
+curve( dnorm(x,m,std), add=TRUE )
+plot.ts(res,ylab= "residuals of model",main="Residuals plot of model")
+fitt <- lm(res~ as.numeric(1:length(res)))
+abline(fitt, col="red")
+abline(h=mean(res), col="blue")
+qqnorm(res,main= "Normal Q-Q Plot for Model")
+qqline(res,col="blue")
+```
+
+```{r, eval=FALSE, echo=TRUE, message=FALSE, warning=FALSE}
+# Performing Shapiro-Wilk test and Portmanteau tests
+shapiro <- shapiro.test(res)
+
+table <- matrix(
+  c(shapiro$statistic, shapiro$p.value),
+  nrow = 1,
+  ncol = 2,
+  byrow = TRUE
+)
+
+colnames(table) = c("W", "p-value")
+kable(table, caption = "Shapiro-Wilk Test")
+
+# Using kableExtra to allow Latex to render inside of kable
+library(kableExtra)
+h <- round(sqrt(length(train)))
+box_pierce <- Box.test(res, lag = h, type = c("Box-Pierce"), fitdf = 3)
+ljung_box <- Box.test(res, lag = h, type = c("Ljung-Box"), fitdf = 3)
+mcleod_li <- Box.test(res^2, lag = h, type = c("Ljung-Box"), fitdf = 0)
+
+table <- matrix(
+  c(box_pierce$statistic, box_pierce$parameter, box_pierce$p.value,
+    ljung_box$statistic, ljung_box$parameter, ljung_box$p.value,
+    mcleod_li$statistic, mcleod_li$parameter, mcleod_li$p.value),
+  nrow = 3,
+  ncol = 3,
+  byrow = TRUE
+)
+
+rownames(table) <- c("Box-Pierce", "Ljung-Box", "Mcleod-Li")
+colnames(table) = c("$\\chi^2$", "df", "p-value")
+kable(table, caption = "Portmanteau Tests",
+      escape = FALSE)
+```
+
+```{r, eval=FALSE, echo=TRUE, message=FALSE, warning=FALSE}
+# Fitting an autoregressive model to residuals
+ar(res, aic = TRUE, order.max = NULL, method = c("yule-walker"))
+```
+
+```{r, eval=FALSE, echo=TRUE, message=FALSE, warning=FALSE}
+# Plotting the ACF and PACF of residuals
+par(mfrow=c(1,2))
+acf(res, lag.max=40,main="")
+title("ACF of the residuals")
+pacf(res, lag.max=40,main="")
+title("PACF of the residuals")
+```
+
+```{r, eval=FALSE, echo=TRUE, message=FALSE, warning=FALSE}
+# Forecasting on the test data
+library(forecast)
+forecast_length <- 36
+pred.tr <- predict(mod1, n.ahead = forecast_length)
+U.tr = pred.tr$pred + 2*pred.tr$se
+L.tr = pred.tr$pred- 2*pred.tr$se
+
+ts.plot(as.numeric(cardox),
+        xlim = c(length(train)-10,length(train)+forecast_length),
+        ylim = c(400,max(cardox) + 20),
+        lwd = 2, col="black", 
+        main = "Forecasted Carbon Dioxide for 2020-2023",
+        xlab = "Time (months)",
+        ylab="Carbon Dioxide (ppm)")
+lines((length(train)+1):length(cardox), test, lwd = 2, col="blue")
+lines(U.tr, lwd = 2, col="orange", lty="dashed")
+lines(L.tr, lwd = 2, col="orange", lty="dashed")
+points((length(cardox)-forecast_length+1):length(cardox), pred.tr$pred, col="red")
+legend("topleft",
+       legend = c("Training Data",
+                  "Test Data",
+                  "Forecast",
+                  "95% Confidence Interval"),
+       col = c("black", "blue", "red", "orange"),
+       lty = c(1, 1, 3, 2), lwd = 2)
+```
+
+```{r, eval=FALSE, echo=TRUE, message=FALSE, warning=FALSE}
+# Forecasting beyond the dataset
+library(forecast)
+forecast_length <- 120
+pred.tr <- predict(mod1, n.ahead = forecast_length)
+U.tr = pred.tr$pred + 2*pred.tr$se
+L.tr = pred.tr$pred- 2*pred.tr$se
+
+ts.plot(as.numeric(train),
+        xlim = c(length(train),length(train)+forecast_length),
+        ylim = c(400,max(cardox) + 30),
+        lwd = 2, col="black", 
+        main = "Forecasted Carbon Dioxide for 2020-2030",
+        xlab = "Time (months)",
+        ylab="Carbon Dioxide (ppm)")
+lines(U.tr, lwd = 2, col="orange", lty="dashed")
+lines(L.tr, lwd = 2, col="orange", lty="dashed")
+points((length(train)+1):(length(train)+forecast_length), pred.tr$pred, col="red")
+legend("topleft",
+       legend = c("Training Data",
+                  "Forecast",
+                  "95% Confidence Interval"),
+       col = c("black", "red", "orange"),
+       lty = c(1, 3, 2), lwd = 2)
+```
